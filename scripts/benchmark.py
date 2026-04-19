@@ -2,7 +2,7 @@
 """Run DFlash training + evaluation and output JSON results.
 
 Usage:
-    python3 scripts/dflash_benchmark.py [--eval-tier 1|2] [--skip-train]
+    python3 scripts/benchmark.py [--eval-tier 1|2] [--skip-train]
 
 Output: JSON to stdout with score, metrics, training script.
 """
@@ -15,10 +15,9 @@ import time
 from pathlib import Path
 
 ROOT_DIR = Path(__file__).parent.parent
-DFLASH_DIR = ROOT_DIR / "dflash"
 CACHE_DIR = Path(os.environ.get("DFLASH_CACHE", os.path.expanduser("~/.cache/dflash_swarm")))
-TRAIN_SCRIPT = DFLASH_DIR / "train.py"
-EVAL_SCRIPT = DFLASH_DIR / "evaluate.py"
+TRAIN_SCRIPT = ROOT_DIR / "train.py"
+EVAL_SCRIPT = ROOT_DIR / "evaluate.py"
 
 EVAL_TIER = 1
 SKIP_TRAIN = False
@@ -37,7 +36,7 @@ def run_training():
 
     result = subprocess.run(
         [sys.executable, str(TRAIN_SCRIPT)],
-        cwd=str(DFLASH_DIR),
+        cwd=str(ROOT_DIR),
         capture_output=True,
         text=True,
         timeout=7200,
@@ -72,7 +71,7 @@ def run_evaluation(tier: int):
 
     result = subprocess.run(
         [sys.executable, str(EVAL_SCRIPT), "--tier", str(tier)],
-        cwd=str(DFLASH_DIR),
+        cwd=str(ROOT_DIR),
         capture_output=True,
         text=True,
         timeout=3600,

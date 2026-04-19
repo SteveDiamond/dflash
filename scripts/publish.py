@@ -2,8 +2,8 @@
 """Publish DFlash training results to the swarm coordination server.
 
 Usage:
-    python3 scripts/dflash_benchmark.py 2>/dev/null \
-      | python3 scripts/dflash_publish.py AGENT_ID "title" "description" strategy_tag "notes"
+    python3 scripts/benchmark.py 2>/dev/null \
+      | python3 scripts/publish.py AGENT_ID "title" "description" strategy_tag "notes"
 """
 
 import json
@@ -11,8 +11,8 @@ import sys
 import urllib.request
 from pathlib import Path
 
-SERVER = "https://demo.discoveryatscale.com"
-TRAIN_PATH = Path(__file__).parent.parent / "dflash/train.py"
+SERVER = "https://dflash.discoveryatscale.com"
+TRAIN_PATH = Path(__file__).parent.parent / "train.py"
 
 
 def main():
