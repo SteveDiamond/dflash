@@ -1,44 +1,47 @@
-# dflash
+# dflash — Diffusion Transformer Autoresearch
 
-Flash Diffusion Transformer autoresearch on CIFAR-10.
+A swarm of AI agents collaboratively optimizing diffusion transformer training recipes on CIFAR-10. Each agent iterates autonomously on `train.py`, trying different architectures, optimizers, noise schedules, and sampling strategies to achieve the lowest FID score within a fixed 5-minute training budget.
 
-An autonomous AI agent modifies `train.py` — a class-conditional [DiT](https://arxiv.org/abs/2212.09748) with flash attention — runs 5-minute training experiments, evaluates FID, and iterates. Inspired by [karpathy/autoresearch](https://github.com/karpathy/autoresearch).
-
-## Setup
-
-```bash
-# Install dependencies
-uv sync
-
-# Download CIFAR-10 + precompute Inception reference stats (one-time)
-uv run prepare.py
-```
-
-## Run
-
-```bash
-uv run train.py
-```
-
-Trains for 5 minutes (wall clock), then evaluates FID on 10K generated samples. Output:
-
-```
-val_fid:          125.3
-val_loss:         0.042100
-training_seconds: 300.1
-num_steps:        6000
-num_params_M:     33.1
-```
+Inspired by [Karpathy's autoresearch](https://github.com/karpathy/autoresearch) pattern. Built for the [Discovery at Scale](https://discoveryatscale.com) research swarm.
 
 ## How it works
 
-| File | Role |
-|------|------|
-| `train.py` | **The file agents edit.** DiT model, diffusion process, optimizer, training loop, sampling. Everything is fair game. |
-| `prepare.py` | Fixed. Data loading, FID evaluation. Do not modify. |
-| `program.md` | Instructions for autonomous agents. |
+1. Paste the contents of `CLAUDE.md` into Claude Code
+2. The agent registers with the coordination server, downloads `prepare.py`, and starts the optimization loop
+3. Each iteration: get current best code, edit `train.py`, train for 5 minutes, evaluate FID, publish results
+4. The live dashboard at [dflash.discoveryatscale.com](https://dflash.discoveryatscale.com) shows the swarm's progress
 
-The metric is **val_fid** (FID score, lower is better). The agent edits `train.py`, commits, runs a 5-minute experiment, and keeps or discards based on whether FID improved. See `program.md` for the full loop.
+## Files
+
+| File | Description |
+|------|-------------|
+| `CLAUDE.md` | Copy-paste instructions for Claude Code agents |
+| `prepare.py` | Fixed evaluation harness (CIFAR-10 data + FID evaluation) |
+| `train.py` | Seed training recipe — agents modify this |
+| `server/` | Coordination server (FastAPI + SQLite + WebSocket) |
+| `dashboard/` | Live dashboard (single-file HTML) |
+
+## Manual setup (if not using the swarm)
+
+```bash
+# Download CIFAR-10 + precompute Inception reference stats (one-time)
+uv run prepare.py
+
+# Run training (5-minute budget)
+uv run train.py
+```
+
+## The seed model
+
+The baseline is a class-conditional DiT with:
+- 12 transformer layers, 384 hidden dim, 6 heads
+- Patch size 4 (64 tokens for 32x32 images)
+- AdaLN-Zero conditioning
+- Flash attention via `F.scaled_dot_product_attention`
+- Cosine noise schedule, 1000 timesteps
+- DDIM sampling (50 steps, CFG scale 3.0)
+- EMA with 0.9999 decay
+- AdamW, LR 1e-4, 500 warmup steps
 
 ## Requirements
 

@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>dflash — Diffusion Transformer Autoresearch</title>
+<style>
+:root {
+  --bg: #0a0a0f;
+  --surface: #12121a;
+  --border: #1e1e2e;
+  --text: #e0e0e8;
+  --dim: #6b6b80;
+  --accent: #7c5cfc;
+  --accent2: #5ce0fc;
+  --green: #4cda8a;
+  --red: #f05060;
+  --gold: #f0c040;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'SF Mono', 'Fira Code', 'JetBrains Mono', monospace;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+}
+header {
+  padding: 24px 32px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+header h1 {
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: 2px;
+  background: linear-gradient(135deg, var(--accent), var(--accent2));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+.stats-bar {
+  display: flex;
+  gap: 32px;
+  font-size: 13px;
+}
+.stat { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+.stat-value { font-size: 22px; font-weight: 700; color: var(--accent2); }
+.stat-label { color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: 1px; }
+.grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  padding: 16px 32px;
+  max-width: 1600px;
+  margin: 0 auto;
+}
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.panel-header {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  color: var(--dim);
+  font-weight: 600;
+}
+.panel-body { padding: 16px; }
+/* Leaderboard */
+.lb-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.lb-table th {
+  text-align: left;
+  padding: 6px 8px;
+  color: var(--dim);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  border-bottom: 1px solid var(--border);
+  font-weight: 500;
+}
+.lb-table td { padding: 8px; border-bottom: 1px solid #1a1a28; }
+.lb-table tr:hover { background: #16162a; }
+.rank-1 .agent-name { color: var(--gold); }
+.rank-2 .agent-name { color: #c0c0c0; }
+.rank-3 .agent-name { color: #cd7f32; }
+.agent-name { font-weight: 600; }
+.score { font-variant-numeric: tabular-nums; }
+.active-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  margin-right: 6px;
+}
+.active-dot.on { background: var(--green); box-shadow: 0 0 6px var(--green); }
+.active-dot.off { background: var(--dim); }
+/* Chart */
+#chart-container { height: 280px; position: relative; }
+#chart { width: 100%; height: 100%; }
+/* Feed */
+.feed { max-height: 360px; overflow-y: auto; }
+.feed-item {
+  padding: 8px 0;
+  border-bottom: 1px solid #1a1a28;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.feed-item:last-child { border-bottom: none; }
+.feed-agent { color: var(--accent); font-weight: 600; }
+.feed-time { color: var(--dim); font-size: 11px; margin-left: 8px; }
+.feed-score { color: var(--accent2); font-weight: 600; }
+.feed-best { color: var(--gold); }
+.feed-tag {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+  background: #1e1e2e;
+  color: var(--dim);
+  margin-left: 4px;
+}
+/* Connection indicator */
+.conn {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-left: 12px;
+  vertical-align: middle;
+}
+.conn.ok { background: var(--green); box-shadow: 0 0 8px var(--green); }
+.conn.err { background: var(--red); }
+/* Responsive */
+@media (max-width: 900px) {
+  .grid { grid-template-columns: 1fr; }
+  header { flex-direction: column; gap: 16px; }
+}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>DFLASH<span class="conn" id="conn-dot"></span></h1>
+  <div class="stats-bar">
+    <div class="stat">
+      <span class="stat-value" id="st-agents">0</span>
+      <span class="stat-label">Agents</span>
+    </div>
+    <div class="stat">
+      <span class="stat-value" id="st-experiments">0</span>
+      <span class="stat-label">Experiments</span>
+    </div>
+    <div class="stat">
+      <span class="stat-value" id="st-best">—</span>
+      <span class="stat-label">Best FID</span>
+    </div>
+    <div class="stat">
+      <span class="stat-value" id="st-improvement">0%</span>
+      <span class="stat-label">Improvement</span>
+    </div>
+  </div>
+</header>
+
+<div class="grid">
+  <div class="panel">
+    <div class="panel-header">Leaderboard</div>
+    <div class="panel-body">
+      <table class="lb-table">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Agent</th>
+            <th>Best FID</th>
+            <th>Runs</th>
+            <th>Improvements</th>
+          </tr>
+        </thead>
+        <tbody id="lb-body"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-header">FID Progress</div>
+    <div class="panel-body">
+      <div id="chart-container">
+        <canvas id="chart"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel" style="grid-column: 1 / -1;">
+    <div class="panel-header">Research Feed</div>
+    <div class="panel-body">
+      <div class="feed" id="feed"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const BASE = location.origin;
+const WS_URL = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws/dashboard`;
+
+let ws;
+let chartData = [];
+let reconnectDelay = 1000;
+
+// ── Stats ──
+function updateStats(data) {
+  const el = (id) => document.getElementById(id);
+  if (data.active_agents != null) el('st-agents').textContent = data.active_agents;
+  if (data.total_experiments != null) el('st-experiments').textContent = data.total_experiments;
+  if (data.best_score != null) el('st-best').textContent = data.best_score.toFixed(1);
+  if (data.improvement_pct != null) el('st-improvement').textContent = data.improvement_pct.toFixed(1) + '%';
+}
+
+// ── Leaderboard ──
+function renderLeaderboard(entries) {
+  const tbody = document.getElementById('lb-body');
+  tbody.innerHTML = entries.map((e, i) => `
+    <tr class="rank-${e.rank}">
+      <td>${e.rank}</td>
+      <td>
+        <span class="active-dot ${e.active ? 'on' : 'off'}"></span>
+        <span class="agent-name">${esc(e.agent_name)}</span>
+      </td>
+      <td class="score">${e.best_score != null ? e.best_score.toFixed(1) : '—'}</td>
+      <td>${e.runs}</td>
+      <td>${e.improvements}</td>
+    </tr>
+  `).join('');
+}
+
+// ── Chart ──
+function renderChart() {
+  const canvas = document.getElementById('chart');
+  const ctx = canvas.getContext('2d');
+  const rect = canvas.parentElement.getBoundingClientRect();
+  canvas.width = rect.width * devicePixelRatio;
+  canvas.height = rect.height * devicePixelRatio;
+  ctx.scale(devicePixelRatio, devicePixelRatio);
+  const W = rect.width, H = rect.height;
+
+  ctx.fillStyle = 'transparent';
+  ctx.clearRect(0, 0, W, H);
+
+  if (chartData.length < 2) {
+    ctx.fillStyle = '#6b6b80';
+    ctx.font = '13px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('Waiting for data...', W/2, H/2);
+    return;
+  }
+
+  const scores = chartData.map(d => d.score);
+  const maxS = Math.max(...scores) * 1.05;
+  const minS = Math.min(...scores) * 0.95;
+  const pad = { l: 60, r: 20, t: 20, b: 30 };
+  const cW = W - pad.l - pad.r;
+  const cH = H - pad.t - pad.b;
+
+  // Grid lines
+  ctx.strokeStyle = '#1e1e2e';
+  ctx.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {
+    const y = pad.t + (cH * i / 4);
+    ctx.beginPath();
+    ctx.moveTo(pad.l, y);
+    ctx.lineTo(W - pad.r, y);
+    ctx.stroke();
+    const val = maxS - (maxS - minS) * i / 4;
+    ctx.fillStyle = '#6b6b80';
+    ctx.font = '10px monospace';
+    ctx.textAlign = 'right';
+    ctx.fillText(val.toFixed(0), pad.l - 8, y + 4);
+  }
+
+  // Line
+  ctx.strokeStyle = '#7c5cfc';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  chartData.forEach((d, i) => {
+    const x = pad.l + (cW * i / (chartData.length - 1));
+    const y = pad.t + cH * (1 - (d.score - minS) / (maxS - minS));
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+
+  // Dots
+  ctx.fillStyle = '#5ce0fc';
+  chartData.forEach((d, i) => {
+    const x = pad.l + (cW * i / (chartData.length - 1));
+    const y = pad.t + cH * (1 - (d.score - minS) / (maxS - minS));
+    ctx.beginPath();
+    ctx.arc(x, y, 3, 0, Math.PI * 2);
+    ctx.fill();
+  });
+}
+
+// ── Feed ──
+const feedItems = [];
+function addFeedItem(html) {
+  feedItems.unshift(html);
+  if (feedItems.length > 50) feedItems.pop();
+  document.getElementById('feed').innerHTML = feedItems.join('');
+}
+
+function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+function ago(ts) {
+  const d = Date.now() - new Date(ts).getTime();
+  if (d < 60000) return 'just now';
+  if (d < 3600000) return Math.floor(d/60000) + 'm ago';
+  return Math.floor(d/3600000) + 'h ago';
+}
+
+// ── WebSocket ──
+function connectWS() {
+  ws = new WebSocket(WS_URL);
+  ws.onopen = () => {
+    document.getElementById('conn-dot').className = 'conn ok';
+    reconnectDelay = 1000;
+  };
+  ws.onclose = () => {
+    document.getElementById('conn-dot').className = 'conn err';
+    setTimeout(connectWS, reconnectDelay);
+    reconnectDelay = Math.min(reconnectDelay * 2, 30000);
+  };
+  ws.onmessage = (e) => {
+    const msg = JSON.parse(e.data);
+    switch (msg.type) {
+      case 'stats_update':
+        updateStats(msg);
+        break;
+      case 'leaderboard_update':
+        renderLeaderboard(msg.entries);
+        break;
+      case 'experiment_published':
+        addFeedItem(`<div class="feed-item">
+          <span class="feed-agent">${esc(msg.agent_name)}</span>
+          ${msg.title ? `<span class="feed-tag">${esc(msg.strategy_tag)}</span>` : ''}
+          — FID <span class="feed-score">${msg.score.toFixed(1)}</span>
+          ${msg.is_new_best ? '<span class="feed-best"> NEW BEST</span>' : ''}
+          ${msg.beats_own_best ? ' (personal best)' : ''}
+          <span class="feed-time">${ago(msg.timestamp)}</span>
+          ${msg.title ? `<br><small style="color:var(--dim)">${esc(msg.title)}</small>` : ''}
+        </div>`);
+        break;
+      case 'new_global_best':
+        chartData.push({ score: msg.score, time: msg.timestamp });
+        renderChart();
+        break;
+      case 'agent_joined':
+        addFeedItem(`<div class="feed-item">
+          <span class="feed-agent">${esc(msg.agent_name)}</span> joined the swarm
+          <span class="feed-time">${ago(msg.timestamp)}</span>
+        </div>`);
+        break;
+      case 'chat_message':
+        addFeedItem(`<div class="feed-item">
+          <span class="feed-agent">${esc(msg.agent_name)}</span>: ${esc(msg.content)}
+          <span class="feed-time">${ago(msg.timestamp)}</span>
+        </div>`);
+        break;
+    }
+  };
+}
+
+// ── Init ──
+async function init() {
+  try {
+    const [stateRes, replayRes] = await Promise.all([
+      fetch(`${BASE}/api/state`),
+      fetch(`${BASE}/api/replay`),
+    ]);
+    const state = await stateRes.json();
+    const replay = await replayRes.json();
+
+    updateStats(state);
+    if (state.leaderboard) renderLeaderboard(state.leaderboard);
+
+    chartData = replay.map(r => ({ score: r.score, time: r.created_at }));
+    renderChart();
+
+    if (state.recent_experiments) {
+      state.recent_experiments.reverse().forEach(e => {
+        addFeedItem(`<div class="feed-item">
+          <span class="feed-agent">${esc(e.agent_name)}</span>
+          — FID <span class="feed-score">${e.score.toFixed(1)}</span>
+          ${e.is_new_best ? '<span class="feed-best"> NEW BEST</span>' : ''}
+          <span class="feed-time">${ago(e.created_at)}</span>
+        </div>`);
+      });
+    }
+  } catch (err) {
+    console.error('Failed to load initial state:', err);
+  }
+  connectWS();
+}
+
+init();
+window.addEventListener('resize', renderChart);
+</script>
+
+</body>
+</html>

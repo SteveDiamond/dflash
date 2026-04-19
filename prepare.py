@@ -1,3 +1,12 @@
+# /// script
+# requires-python = ">=3.10"
+# dependencies = [
+#     "torch>=2.0",
+#     "torchvision>=0.15",
+#     "scipy>=1.10",
+#     "numpy>=1.24",
+# ]
+# ///
 """
 One-time data preparation for dflash autoresearch.
 Downloads CIFAR-10 and precomputes Inception reference statistics for FID.

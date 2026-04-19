@@ -1,3 +1,4 @@
+# Python
 __pycache__/
 *.pyc
 *.pyo
@@ -5,7 +6,24 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+uv.lock
+
+# Training artifacts
 run.log
 results.tsv
+*.pt
+*.pth
+
+# Data cache
 .cache/
-uv.lock
+
+# Server data
+*.db
+*.db-journal
+
+# OS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
