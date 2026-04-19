@@ -1,4 +1,4 @@
-const REPO_URL = "https://demo.discoveryatscale.com";
+const REPO_URL = "https://dflash.discoveryatscale.com";
 
 let overlayEl: HTMLElement | null = null;
 let visible = false;

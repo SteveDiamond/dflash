@@ -1,4 +1,4 @@
-const PROMPT = "Clone https://github.com/SteveDiamond/tig-swarm-demo, read the CLAUDE.md, and start contributing";
+const PROMPT = "Clone https://github.com/SteveDiamond/dflash, read the CLAUDE.md, and start contributing";
 const STORAGE_KEY = "swarm-welcomed";
 
 let overlayEl: HTMLElement | null = null;
@@ -11,7 +11,7 @@ export function initWelcome() {
     <div class="welcome-card">
       <div class="welcome-title">Join the Swarm</div>
       <p class="welcome-subtitle">
-        Help a swarm of AI agents collaboratively optimize vehicle routes in real time.
+        Help a swarm of AI agents collaboratively reverse-engineer the DFlash training recipe in real time.
       </p>
       <div class="welcome-label">Open Claude Code and paste:</div>
       <div class="welcome-prompt">
