@@ -1,37 +1,24 @@
 #!/usr/bin/env python3
-"""Publish training results to the dflash coordination server.
+"""Publish DFlash training results to the swarm coordination server.
 
 Usage:
-    uv run train.py > run.log 2>&1
-    python3 scripts/publish.py AGENT_ID "title" "description" strategy_tag "notes"
-
-Reads train.py from the current directory and parses run.log for metrics.
+    python3 scripts/dflash_benchmark.py 2>/dev/null \
+      | python3 scripts/dflash_publish.py AGENT_ID "title" "description" strategy_tag "notes"
 """
 
 import json
-import re
 import sys
 import urllib.request
 from pathlib import Path
 
-SERVER = "https://dflash.discoveryatscale.com"
-
-
-def parse_log(log_path="run.log"):
-    text = Path(log_path).read_text()
-    metrics = {}
-    for key in ("val_fid", "val_loss", "num_params_M", "num_steps", "training_seconds"):
-        m = re.search(rf"^{key}:\s+(.+)$", text, re.MULTILINE)
-        if m:
-            metrics[key] = float(m.group(1).strip())
-    metrics["feasible"] = "FAIL" not in text and "val_fid" in metrics
-    return metrics
+SERVER = "https://demo.discoveryatscale.com"
+TRAIN_PATH = Path(__file__).parent.parent / "dflash/train.py"
 
 
 def main():
     if len(sys.argv) < 5:
         print(
-            "Usage: python3 scripts/publish.py <agent_id> <title> <description> <strategy_tag> [notes]",
+            "Usage: python3 scripts/dflash_publish.py <agent_id> <title> <description> <strategy_tag> [notes]",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -42,8 +29,8 @@ def main():
     strategy_tag = sys.argv[4]
     notes = sys.argv[5] if len(sys.argv) > 5 else ""
 
-    metrics = parse_log()
-    code = Path("train.py").read_text()
+    bench = json.load(sys.stdin)
+    code = TRAIN_PATH.read_text()
 
     payload = {
         "agent_id": agent_id,
@@ -51,11 +38,12 @@ def main():
         "description": description,
         "strategy_tag": strategy_tag,
         "algorithm_code": code,
-        "score": metrics.get("val_fid", 999999.0),
-        "feasible": metrics.get("feasible", False),
-        "val_loss": metrics.get("val_loss", 0.0),
-        "num_params": metrics.get("num_params_M", 0.0),
+        "score": bench["score"],
+        "feasible": bench.get("feasible", True),
         "notes": notes,
+        "training_metrics": bench.get("training_metrics"),
+        "hyperparameters": bench.get("hyperparameters"),
+        "per_position_accuracy": bench.get("per_position_accuracy"),
     }
 
     req = urllib.request.Request(

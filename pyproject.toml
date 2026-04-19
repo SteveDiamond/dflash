@@ -1,11 +1,15 @@
 [project]
-name = "dflash"
+name = "dflash-swarm"
 version = "0.1.0"
-description = "Flash Diffusion Transformer autoresearch on CIFAR-10"
+description = "DFlash training reverse-engineering swarm"
 requires-python = ">=3.10"
 dependencies = [
     "torch>=2.1",
-    "torchvision>=0.16",
+    "transformers>=4.57",
+    "datasets",
+    "huggingface-hub",
+    "accelerate",
     "numpy",
-    "scipy",
+    "tqdm",
+    "requests",
 ]

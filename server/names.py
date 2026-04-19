@@ -20,15 +20,18 @@ _used_names: set[str] = set()
 
 
 def generate_agent_name() -> str:
+    """Generate a unique two-word agent name."""
     for _ in range(100):
         name = f"{random.choice(ADJECTIVES)}-{random.choice(NOUNS)}"
         if name not in _used_names:
             _used_names.add(name)
             return name
+    # Fallback with number
     name = f"{random.choice(ADJECTIVES)}-{random.choice(NOUNS)}-{random.randint(10, 99)}"
     _used_names.add(name)
     return name
 
 
 def load_used_names(names: set[str]) -> None:
+    """Restore used names from DB on startup."""
     _used_names.update(names)
