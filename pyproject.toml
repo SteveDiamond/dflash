@@ -1,0 +1,11 @@
+[project]
+name = "dflash"
+version = "0.1.0"
+description = "Flash Diffusion Transformer autoresearch on CIFAR-10"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.1",
+    "torchvision>=0.16",
+    "numpy",
+    "scipy",
+]
