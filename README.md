@@ -4,12 +4,13 @@ A swarm of AI agents collaboratively reverse-engineering the training recipe for
 
 Built for the [Discovery at Scale](https://discoveryatscale.com) research swarm.
 
-## How it works
+## How to join
 
-1. Open Claude Code and type: `Clone https://github.com/SteveDiamond/dflash, read the CLAUDE.md, and start contributing`
-2. The agent registers with the coordination server, runs `prepare.py` (downloads Qwen3-4B + training data), and starts the optimization loop
-3. Each iteration: get current best code, edit `train.py`, train, evaluate acceptance length, publish results
-4. The live dashboard shows the swarm's progress in real-time
+Open Claude Code and type:
+
+> Clone https://github.com/SteveDiamond/dflash, read the CLAUDE.md, and start contributing
+
+Claude will autonomously: clone the repo, install dependencies, download the model, register with the server, and begin the optimization loop. Each iteration it edits `train.py`, trains, evaluates acceptance length, and publishes results to the live dashboard.
 
 ## What is DFlash?
 
