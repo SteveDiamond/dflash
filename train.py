@@ -22,8 +22,6 @@ from model import (
     DFlashDraftModel,
     extract_context_features,
     load_target_model,
-    create_training_block,
-    build_block_position_ids,
     compute_position_weights,
 )
 from prepare import CACHE_DIR, TARGET_MODEL, TRAIN_DATA_PATH, EVAL_DATA_PATH
@@ -180,86 +178,101 @@ smooth_loss = 0.0
 best_loss = float("inf")
 losses = []
 data_indices = list(range(len(all_input_ids)))
+pad_token_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0
 
 for step in range(NUM_STEPS):
     t0 = time.time()
 
-    # --- Sample batch ---
-    batch_indices = random.choices(data_indices, k=BATCH_SIZE)
-
-    total_loss = 0.0
-    num_tokens = 0
-
-    for idx in batch_indices:
-        input_ids = all_input_ids[idx].to(device)
-        prompt_len = all_prompt_lens[idx]
-        response_ids = input_ids[prompt_len:]
-
-        if len(response_ids) < BLOCK_SIZE + 1:
+    # --- Sample batch + per-sample anchor ---
+    # Sample anchors up front so we can pad, run one target forward for the
+    # whole batch, and one draft forward for the whole batch. Constraint:
+    # abs_anchor = prompt_len + anchor_pos >= BLOCK_SIZE, so the ctx slice
+    # [abs_anchor - BLOCK_SIZE : abs_anchor] always fits.
+    seqs = []  # list of (input_ids, prompt_len, anchor_pos)
+    for idx in random.choices(data_indices, k=BATCH_SIZE):
+        iids = all_input_ids[idx]
+        plen = all_prompt_lens[idx]
+        if len(iids) - plen < BLOCK_SIZE + 1:
             continue
-
-        # --- Forward through target model (frozen, no grad) ---
-        with torch.no_grad(), torch.amp.autocast(device_type="cuda", dtype=amp_dtype, enabled=use_amp):
-            target_out = target_model(
-                input_ids.unsqueeze(0),
-                output_hidden_states=True,
-                use_cache=False,
-            )
-            target_features = extract_context_features(
-                target_out.hidden_states,
-                draft_model.target_layer_ids,
-            )
-
-        # --- Create training block ---
-        block_ids, labels, anchor_pos = create_training_block(
-            response_ids, BLOCK_SIZE, MASK_TOKEN_ID,
-        )
-
-        abs_anchor = prompt_len + anchor_pos
-        # Match eval/inference: ctx is the BLOCK_SIZE tokens strictly
-        # preceding the anchor, so the draft never sees target features
-        # computed from the tokens it is trying to predict.
-        if abs_anchor < BLOCK_SIZE:
+        min_anchor_pos = max(0, BLOCK_SIZE - plen)
+        max_anchor_pos = len(iids) - plen - BLOCK_SIZE
+        if max_anchor_pos < min_anchor_pos:
             continue
-        block_ids = block_ids.to(device)
-        labels = labels.to(device)
+        anchor_pos = int(torch.randint(min_anchor_pos, max_anchor_pos + 1, (1,)).item())
+        seqs.append((iids, plen, anchor_pos))
 
-        # --- Get embeddings and context ---
-        with torch.no_grad():
-            noise_emb = embed_fn(block_ids.unsqueeze(0))
-            ctx_features = target_features[:, abs_anchor - BLOCK_SIZE:abs_anchor, :]
-
-        # --- Position IDs ---
-        ctx_positions = torch.arange(abs_anchor - BLOCK_SIZE, abs_anchor, device=device)
-        draft_positions = torch.arange(abs_anchor, abs_anchor + BLOCK_SIZE, device=device)
-        position_ids = torch.cat([ctx_positions, draft_positions]).unsqueeze(0)
-
-        # --- Forward draft model ---
-        with torch.amp.autocast(device_type="cuda", dtype=amp_dtype, enabled=use_amp):
-            draft_hidden = draft_model(
-                noise_embedding=noise_emb,
-                target_hidden=ctx_features,
-                position_ids=position_ids,
-            )
-            logits = lm_head(draft_hidden[:, 1:, :])  # skip anchor, predict B-1 tokens
-
-            # --- Weighted cross-entropy loss ---
-            loss_per_pos = F.cross_entropy(
-                logits.view(-1, logits.size(-1)),
-                labels.view(-1),
-                reduction="none",
-                label_smoothing=LABEL_SMOOTHING,
-            )
-            weights = position_weights[:len(labels)]
-            weighted_loss = (loss_per_pos * weights).sum() / weights.sum()
-
-        total_loss += weighted_loss
-        num_tokens += len(labels)
-
-    if num_tokens == 0:
+    if not seqs:
         continue
 
-    batch_loss = total_loss / BATCH_SIZE
+    bsz = len(seqs)
+    max_len = max(iids.size(0) for iids, _, _ in seqs)
+
+    # --- Pad into a single tensor ---
+    padded = torch.full((bsz, max_len), pad_token_id, dtype=torch.long, device=device)
+    attn_mask = torch.zeros((bsz, max_len), dtype=torch.long, device=device)
+    for i, (iids, _, _) in enumerate(seqs):
+        L = iids.size(0)
+        padded[i, :L] = iids.to(device)
+        attn_mask[i, :L] = 1
+
+    # --- One batched target forward ---
+    with torch.no_grad(), torch.amp.autocast(device_type="cuda", dtype=amp_dtype, enabled=use_amp):
+        target_out = target_model(
+            padded,
+            attention_mask=attn_mask,
+            output_hidden_states=True,
+            use_cache=False,
+        )
+        target_features = extract_context_features(
+            target_out.hidden_states, draft_model.target_layer_ids,
+        )  # (bsz, max_len, num_features * hidden_size)
+
+    # --- Assemble per-sample blocks, ctx, and positions ---
+    ctx_dim = target_features.size(-1)
+    block_ids_batch = torch.full((bsz, BLOCK_SIZE), MASK_TOKEN_ID,
+                                  dtype=torch.long, device=device)
+    labels_batch = torch.zeros(bsz, BLOCK_SIZE - 1, dtype=torch.long, device=device)
+    ctx_batch = torch.empty(bsz, BLOCK_SIZE, ctx_dim,
+                             dtype=target_features.dtype, device=device)
+    pos_batch = torch.empty(bsz, 2 * BLOCK_SIZE, dtype=torch.long, device=device)
+
+    for i, (iids, plen, anchor_pos) in enumerate(seqs):
+        abs_anchor = plen + anchor_pos
+        iids_dev = iids.to(device)
+        block_ids_batch[i, 0] = iids_dev[abs_anchor]
+        labels_batch[i] = iids_dev[abs_anchor + 1 : abs_anchor + BLOCK_SIZE]
+        ctx_batch[i] = target_features[i, abs_anchor - BLOCK_SIZE : abs_anchor, :]
+        pos_batch[i, :BLOCK_SIZE] = torch.arange(
+            abs_anchor - BLOCK_SIZE, abs_anchor, device=device,
+        )
+        pos_batch[i, BLOCK_SIZE:] = torch.arange(
+            abs_anchor, abs_anchor + BLOCK_SIZE, device=device,
+        )
+
+    # --- One batched draft forward + loss ---
+    with torch.no_grad():
+        noise_emb = embed_fn(block_ids_batch)
+
+    with torch.amp.autocast(device_type="cuda", dtype=amp_dtype, enabled=use_amp):
+        draft_hidden = draft_model(
+            noise_embedding=noise_emb,
+            target_hidden=ctx_batch,
+            position_ids=pos_batch,
+        )
+        logits = lm_head(draft_hidden[:, 1:, :])  # (bsz, B-1, vocab)
+
+        loss_per_pos = F.cross_entropy(
+            logits.reshape(-1, logits.size(-1)),
+            labels_batch.reshape(-1),
+            reduction="none",
+            label_smoothing=LABEL_SMOOTHING,
+        ).view(bsz, BLOCK_SIZE - 1)
+
+        weights = position_weights  # (B-1,)
+        per_sample_loss = (loss_per_pos * weights).sum(dim=1) / weights.sum()
+        # Divide by nominal BATCH_SIZE (not bsz) so steps where some samples
+        # were dropped scale the gradient the same way the old loop did.
+        batch_loss = per_sample_loss.sum() / BATCH_SIZE
 
     # --- Backward + optimize ---
     optimizer.zero_grad(set_to_none=True)
