@@ -1128,20 +1128,55 @@ async def admin_broadcast(req: AdminBroadcast):
     return {"sent": True}
 
 
-# Reset endpoint disabled to protect experiment data.
-# @app.post("/api/admin/reset")
-# async def admin_reset(req: AdminAuth):
-#     await verify_admin(req)
-#     async with db.connect() as conn:
-#         await conn.execute("DELETE FROM experiments")
-#         await conn.execute("DELETE FROM hypotheses")
-#         await conn.execute("DELETE FROM agents")
-#         await conn.execute("DELETE FROM messages")
-#         await conn.execute("DELETE FROM agent_bests")
-#         await conn.execute("DELETE FROM best_history")
-#         await conn.commit()
-#     await manager.broadcast({"type": "reset", "timestamp": now()})
-#     return {"reset": True}
+@app.post("/api/admin/reset")
+async def admin_reset(req: AdminAuth):
+    """Wipe all swarm state. Destructive — admin key required."""
+    await verify_admin(req)
+    async with db.connect() as conn:
+        await conn.execute("DELETE FROM experiments")
+        await conn.execute("DELETE FROM hypotheses")
+        await conn.execute("DELETE FROM agents")
+        await conn.execute("DELETE FROM messages")
+        await conn.execute("DELETE FROM agent_bests")
+        await conn.execute("DELETE FROM best_history")
+        await conn.commit()
+    await manager.broadcast({"type": "reset", "timestamp": now()})
+    return {"reset": True}
+
+
+class AdminDeleteAgent(AdminAuth):
+    agent_name: str
+
+
+@app.post("/api/admin/delete_agent")
+async def admin_delete_agent(req: AdminDeleteAgent):
+    """Clean out all data for a single agent by name. Destructive — admin
+    key required. Deletes the agent row, its experiments, hypotheses,
+    agent_bests, best_history, and chat messages. Intended for removing
+    a compromised / misbehaving agent without resetting the whole swarm."""
+    await verify_admin(req)
+    async with db.connect() as conn:
+        cursor = await conn.execute(
+            "SELECT id FROM agents WHERE name = ?", (req.agent_name,),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail=f"no agent named {req.agent_name!r}")
+        agent_id = row["id"]
+        await conn.execute("DELETE FROM experiments WHERE agent_id = ?", (agent_id,))
+        await conn.execute("DELETE FROM hypotheses WHERE agent_id = ?", (agent_id,))
+        await conn.execute("DELETE FROM agent_bests WHERE agent_id = ?", (agent_id,))
+        await conn.execute("DELETE FROM best_history WHERE agent_id = ?", (agent_id,))
+        await conn.execute("DELETE FROM messages WHERE agent_id = ?", (agent_id,))
+        await conn.execute("DELETE FROM agents WHERE id = ?", (agent_id,))
+        await conn.commit()
+    await manager.broadcast({
+        "type": "agent_deleted",
+        "agent_id": agent_id,
+        "agent_name": req.agent_name,
+        "timestamp": now(),
+    })
+    return {"deleted": True, "agent_id": agent_id, "agent_name": req.agent_name}
 
 
 @app.post("/api/admin/config")
