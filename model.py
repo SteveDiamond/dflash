@@ -436,30 +436,37 @@ def speculative_decode(
         output_ids: (1, total_len) generated sequence
         acceptance_lengths: list of accepted lengths per block
     """
+    from transformers.cache_utils import DynamicCache
+
     device = input_ids.device
     num_input = input_ids.shape[1]
     max_length = num_input + max_new_tokens
+    embed_fn = target_model.model.embed_tokens
+    lm_head = target_model.lm_head
+    layer_ids = draft_model.target_layer_ids
 
     output_ids = torch.full((1, max_length + block_size), mask_token_id,
                             dtype=torch.long, device=device)
     output_ids[:, :num_input] = input_ids
 
+    # Prefill target with KV cache — subsequent blocks only process the new
+    # tokens, not the full sequence, which is a 10×+ speedup for tier-2 eval.
+    past_kv = DynamicCache()
+    pos_ids = torch.arange(output_ids.size(1), device=device).unsqueeze(0)
     target_out = target_model(
-        input_ids, output_hidden_states=True, use_cache=False,
+        input_ids, position_ids=pos_ids[:, :num_input],
+        past_key_values=past_kv, use_cache=True,
+        output_hidden_states=True,
     )
     first_token = _sample(target_out.logits[:, -1:, :], temperature)
     output_ids[:, num_input] = first_token.squeeze()
 
     target_features = extract_context_features(
-        target_out.hidden_states, draft_model.target_layer_ids,
+        target_out.hidden_states, layer_ids,
     )
 
     acceptance_lengths = []
     start = num_input
-
-    embed_fn = target_model.model.embed_tokens
-    lm_head = target_model.lm_head
-    layer_ids = draft_model.target_layer_ids
 
     while start < max_length:
         end = min(start + block_size, max_length)
@@ -468,41 +475,50 @@ def speculative_decode(
 
         if actual_bs > 1:
             noise_emb = embed_fn(block_tokens)
-            # Full-history ctx: all target_features up to position `start`.
-            ctx_features = target_features[:, :start, :]
+            ctx_features = target_features  # full history so far
             ctx_len = ctx_features.shape[1]
 
             ctx_pos = torch.arange(0, ctx_len, device=device)
             draft_pos = torch.arange(start, start + actual_bs, device=device)
-            pos_ids = torch.cat([ctx_pos, draft_pos]).unsqueeze(0)
+            draft_pos_ids = torch.cat([ctx_pos, draft_pos]).unsqueeze(0)
 
             draft_hidden = draft_model(
                 noise_embedding=noise_emb,
                 target_hidden=ctx_features,
-                position_ids=pos_ids,
+                position_ids=draft_pos_ids,
             )
             draft_logits = lm_head(draft_hidden[:, 1:, :])
             block_tokens[:, 1:actual_bs] = _sample(
                 draft_logits[:, :actual_bs - 1, :], temperature,
             )
 
+        # Verify via target with KV cache: only the new block_tokens get
+        # processed; everything up through `start` is cached from prior blocks.
         target_out = target_model(
-            output_ids[:, :start + actual_bs],
-            output_hidden_states=True, use_cache=False,
+            block_tokens[:, :actual_bs],
+            position_ids=pos_ids[:, start:start + actual_bs],
+            past_key_values=past_kv, use_cache=True,
+            output_hidden_states=True,
         )
-        posterior = _sample(target_out.logits[:, start - 1:start + actual_bs - 1, :], temperature)
-
-        accepted = (block_tokens[:, 1:] == posterior[:, 1:]).cumprod(dim=1).sum(dim=1)[0].item()
+        posterior = _sample(target_out.logits, temperature)
+        # posterior has shape (1, actual_bs) — prediction of the token at each
+        # new position given everything causally before it. posterior[:, k]
+        # is target's take on what should follow block_tokens[:, k].
+        accepted = (block_tokens[:, 1:] == posterior[:, :-1]).cumprod(dim=1).sum(dim=1)[0].item()
         output_ids[:, start:start + accepted + 1] = block_tokens[:, :accepted + 1]
         if start + accepted + 1 < max_length:
             output_ids[:, start + accepted + 1] = posterior[0, accepted]
+
+        new_features = extract_context_features(target_out.hidden_states, layer_ids)
+        # Keep only features up through accepted + 1 (the committed position);
+        # trim the target KV cache to match so next block continues cleanly.
+        target_features = torch.cat(
+            [target_features, new_features[:, : accepted + 1, :]], dim=1,
+        )
+        past_kv.crop(start + accepted + 1)
+
         start += accepted + 1
         acceptance_lengths.append(accepted + 1)
-
-        # Refresh target features over the accepted output so ctx stays aligned.
-        target_features = extract_context_features(
-            target_out.hidden_states, layer_ids,
-        )
 
     output_ids = output_ids[:, :min(start + 1, max_length)]
     return output_ids, acceptance_lengths

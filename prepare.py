@@ -1,8 +1,15 @@
 """
 One-time data preparation for DFlash training swarm.
-Downloads target model and instruction dataset, then tokenizes
-(instruction, dataset response) pairs. Responses come from the dataset
-as-is — the seed does not regenerate them with the target model.
+
+Downloads target model, a seed instruction dataset (CodeAlpaca), and for
+every prompt rolls out 48 tokens of target greedy continuation. The draft
+model is trained to match this rollout — the eval harness compares draft
+predictions to target.argmax, so giving the seed target-generated responses
+up front (instead of dataset responses) avoids the "score locked at 1.00"
+cliff newcomers would otherwise hit.
+
+Prompts are tokenized with `enable_thinking=False`, matching the eval
+harness, so training and eval share the same chat-template distribution.
 
 Usage: uv run prepare.py
 
@@ -23,6 +30,16 @@ EVAL_DATA_PATH = DATA_DIR / "eval_prompts.pt"
 MAX_TRAIN_SAMPLES = 20_000
 MAX_SEQ_LEN = 512
 MAX_NEW_TOKENS = 256
+
+# Version marker for the training data format. Bump this whenever the
+# prompt formatting or response-generation scheme changes so prepare.py
+# knows to regenerate an existing cache.
+TRAIN_DATA_VERSION = 2
+
+# Length of the target greedy rollout (in tokens) spliced onto every
+# prompt. Needs to be ≥ BLOCK_SIZE in train.py so a full block fits
+# starting at anchor_pos=0. 48 leaves headroom for multi-block training.
+ROLLOUT_TOKENS = 48
 
 EVAL_PROMPTS = [
     "Write a Python function that computes the nth Fibonacci number using dynamic programming.",
@@ -103,15 +120,24 @@ def download_model():
 
 
 def prepare_training_data(model, tokenizer):
-    """Download instruction data and tokenize (instruction, dataset response)
-    pairs. Responses are used as-is from the dataset; the target model is
-    not invoked here."""
+    """Tokenize non-thinking prompts from the instruction dataset and splice
+    `ROLLOUT_TOKENS` of target greedy continuation onto each. The result is
+    `[prompt_tokens, target_rollout]` so the draft's training labels already
+    match what the eval harness measures."""
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
     if TRAIN_DATA_PATH.exists():
-        data = torch.load(TRAIN_DATA_PATH, weights_only=True)
-        print(f"Training data already exists: {len(data['input_ids'])} sequences")
-        return
+        try:
+            data = torch.load(TRAIN_DATA_PATH, weights_only=True)
+        except Exception:
+            data = {}
+        if data.get("version") == TRAIN_DATA_VERSION:
+            print(f"Training data already exists: {len(data['input_ids'])} sequences "
+                  f"(v{TRAIN_DATA_VERSION})")
+            return
+        print(f"Training data format changed (found v{data.get('version')}, "
+              f"want v{TRAIN_DATA_VERSION}) — regenerating.")
+        TRAIN_DATA_PATH.unlink()
 
     from datasets import load_dataset
 
@@ -125,43 +151,63 @@ def prepare_training_data(model, tokenizer):
     dataset = dataset.select(range(min(len(dataset), MAX_TRAIN_SAMPLES)))
     print(f"Loaded {len(dataset)} instruction examples")
 
-    print("Tokenizing (instruction, dataset response) pairs...")
     device = next(model.parameters()).device
     if device.type == "cpu":
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         model = model.to(device)
-
     model.eval()
-    all_input_ids = []
-    all_prompt_lens = []
 
-    for i, example in enumerate(tqdm(dataset, desc="Tokenizing")):
+    # Step 1: tokenize every prompt with enable_thinking=False.
+    print("Tokenizing prompts (non-thinking template)...")
+    prompts = []
+    for example in tqdm(dataset, desc="Tokenizing"):
         instruction = example.get("instruction", example.get("prompt", ""))
         inp = example.get("input", "")
-        output = example.get("output", example.get("response", ""))
+        content = f"{instruction}\n{inp}" if inp else instruction
+        formatted = tokenizer.apply_chat_template(
+            [{"role": "user", "content": content}],
+            tokenize=False, add_generation_prompt=True, enable_thinking=False,
+        )
+        tokens = tokenizer(formatted, return_tensors="pt",
+                           max_length=MAX_SEQ_LEN - ROLLOUT_TOKENS, truncation=True)
+        prompts.append(tokens["input_ids"].squeeze(0))
 
-        if inp:
-            prompt = f"<|im_start|>user\n{instruction}\n{inp}<|im_end|>\n<|im_start|>assistant\n"
-        else:
-            prompt = f"<|im_start|>user\n{instruction}<|im_end|>\n<|im_start|>assistant\n"
+    # Step 2: batch-generate `ROLLOUT_TOKENS` tokens of target greedy continuation.
+    # Left-pad so every row shares the same final prompt position → the generation
+    # step sees the real last prompt token at the same column for every row.
+    pad_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0
+    print(f"Rolling out {ROLLOUT_TOKENS} target tokens per prompt (batched)...")
+    all_input_ids = []
+    all_prompt_lens = []
+    gen_bsz = 32
+    import time
+    t0 = time.time()
+    for start in tqdm(range(0, len(prompts), gen_bsz), desc="Rollout"):
+        chunk = prompts[start : start + gen_bsz]
+        max_plen = max(p.size(0) for p in chunk)
+        padded = torch.full((len(chunk), max_plen), pad_id, dtype=torch.long, device=device)
+        attn = torch.zeros((len(chunk), max_plen), dtype=torch.long, device=device)
+        for j, p in enumerate(chunk):
+            L = p.size(0)
+            padded[j, max_plen - L :] = p.to(device)
+            attn[j, max_plen - L :] = 1
+        with torch.no_grad():
+            gen = model.generate(
+                padded, attention_mask=attn,
+                max_new_tokens=ROLLOUT_TOKENS, do_sample=False,
+                temperature=None, top_p=None, pad_token_id=pad_id,
+            )
+        # gen has shape (bsz, max_plen + ROLLOUT_TOKENS). For each row, stitch the
+        # original (unpadded) prompt with the last ROLLOUT_TOKENS of gen.
+        for j, p in enumerate(chunk):
+            seq = torch.cat([p, gen[j, -ROLLOUT_TOKENS:].cpu()])
+            all_input_ids.append(seq)
+            all_prompt_lens.append(p.size(0))
 
-        full_text = prompt + output + "<|im_end|>"
-
-        tokens = tokenizer(full_text, return_tensors="pt",
-                           max_length=MAX_SEQ_LEN, truncation=True)
-        prompt_tokens = tokenizer(prompt, return_tensors="pt",
-                                  max_length=MAX_SEQ_LEN, truncation=True)
-
-        input_ids = tokens["input_ids"].squeeze(0)
-        prompt_len = prompt_tokens["input_ids"].shape[1]
-
-        if len(input_ids) - prompt_len < 20:
-            continue
-
-        all_input_ids.append(input_ids)
-        all_prompt_lens.append(prompt_len)
+    print(f"Rollouts done in {time.time() - t0:.0f}s")
 
     torch.save({
+        "version": TRAIN_DATA_VERSION,
         "input_ids": all_input_ids,
         "prompt_lens": all_prompt_lens,
     }, TRAIN_DATA_PATH)
@@ -181,9 +227,8 @@ def prepare_eval_prompts(tokenizer):
     all_input_ids = []
 
     # Format with enable_thinking=False — Qwen3-4B defaults to thinking mode
-    # (emits <think> as the first response token). The released DFlash draft
-    # was trained on non-thinking responses, and the seed trains on dataset
-    # responses that have no <think>, so the eval distribution needs to match.
+    # (emits <think> as the first response token). Training also uses the
+    # non-thinking template, so the anchor distribution matches at eval.
     for prompt_text in EVAL_PROMPTS:
         formatted = tokenizer.apply_chat_template(
             [{"role": "user", "content": prompt_text}],

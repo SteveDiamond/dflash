@@ -222,20 +222,23 @@ The draft model in `model.py`:
 
 ## Tips for Good Ideas
 
+You're aiming at the released oracle (tier-1 ≈ **5.27**, tier-2 ≈ **4.56**) — run `python scripts/oracle_score.py` for the current ceiling on this machine. The seed scores well above 1.00 out of the box (prepare.py now ships with target-rollout responses), so you have real headroom to close without having to fix the data first.
+
 Roughly ordered by expected impact:
 
 1. **Loss weighting γ**: The paper says w_k = exp(-(k-1)/γ). Try γ ∈ {1, 2, 4, 8, 16}. This is probably the most impactful unknown.
 2. **Learning rate + schedule**: Try {1e-4, 3e-4, 1e-3} with {constant, cosine, linear} warmdown.
-3. **More training steps**: The seed uses 2000 steps. Try 5000, 10000, 20000.
+3. **More training steps**: The seed uses 2000 steps. Try 5000, 10000, 20000, 40000.
 4. **Optimizer**: Try Adam, AdamW with different weight decay, or Lion/Muon if you implement them.
 5. **Batch size**: Larger batches (gradient accumulation) may help. Try 8, 16 effective batch size.
 6. **EMA**: The paper likely uses EMA. Try decay ∈ {0.99, 0.999, 0.9999}.
-7. **Multiple blocks per sequence**: The seed trains on 1 block per sequence. The paper uses multiple blocks with sparse attention masks. Implementing multi-block training could be a major improvement.
+7. **BLOCKS_PER_SEQ**: Already wired up — each training step does `BATCH_SIZE × BLOCKS_PER_SEQ` draft blocks from one target forward. Try 2, 4, 8.
 8. **Architecture**: Try different numbers of draft layers (3, 5, 8).
 9. **Block size**: Try 8 vs 16 vs 32.
 10. **Label smoothing**: Try 0.1, 0.2.
 11. **Warmup**: Try 50, 100, 500, 1000 steps.
 12. **torch.compile**: Compile the draft model for faster training.
+13. **Longer target rollouts in prepare.py** — if you want mid-response training (anchor_pos > 0), bump `ROLLOUT_TOKENS` in prepare.py and re-run it; the default 48 gives anchors up through position 32 with a full 16-token block fitting.
 
 ## Target Model
 
