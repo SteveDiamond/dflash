@@ -183,23 +183,25 @@ pad_token_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else
 for step in range(NUM_STEPS):
     t0 = time.time()
 
-    # --- Sample batch + per-sample anchor ---
-    # Sample anchors up front so we can pad, run one target forward for the
-    # whole batch, and one draft forward for the whole batch. Constraint:
-    # abs_anchor = prompt_len + anchor_pos >= BLOCK_SIZE, so the ctx slice
-    # [abs_anchor - BLOCK_SIZE : abs_anchor] always fits.
-    seqs = []  # list of (input_ids, prompt_len, anchor_pos)
+    # --- Sample batch + per-sample anchors ---
+    # Each sequence contributes BLOCKS_PER_SEQ blocks at distinct anchor
+    # positions; one target forward yields BATCH_SIZE*BLOCKS_PER_SEQ blocks.
+    # Ctx is now the full prefix [0, abs_anchor), so anchor can be anywhere
+    # in the response as long as BLOCK_SIZE labels fit after it.
+    seqs = []  # list of (input_ids, prompt_len, [anchor_pos, ...])
     for idx in random.choices(data_indices, k=BATCH_SIZE):
         iids = all_input_ids[idx]
         plen = all_prompt_lens[idx]
         if len(iids) - plen < BLOCK_SIZE + 1:
             continue
-        min_anchor_pos = max(0, BLOCK_SIZE - plen)
         max_anchor_pos = len(iids) - plen - BLOCK_SIZE
-        if max_anchor_pos < min_anchor_pos:
+        if max_anchor_pos < 0:
             continue
-        anchor_pos = int(torch.randint(min_anchor_pos, max_anchor_pos + 1, (1,)).item())
-        seqs.append((iids, plen, anchor_pos))
+        anchor_positions = [
+            int(torch.randint(0, max_anchor_pos + 1, (1,)).item())
+            for _ in range(BLOCKS_PER_SEQ)
+        ]
+        seqs.append((iids, plen, anchor_positions))
 
     if not seqs:
         continue
@@ -227,27 +229,44 @@ for step in range(NUM_STEPS):
             target_out.hidden_states, draft_model.target_layer_ids,
         )  # (bsz, max_len, num_features * hidden_size)
 
-    # --- Assemble per-sample blocks, ctx, and positions ---
+    # --- Assemble per-block tensors (one row per anchor, not per sequence) ---
+    # Ctx is the full prefix [0, abs_anchor) of target_features for each block,
+    # matching how the released draft was trained and how evaluate.py now runs.
+    # We pad all ctxs to max_len (the padded target_features length) and use an
+    # attention_mask to block the padding — the padded positions are free to
+    # have arbitrary position_ids since they never contribute to attention.
     ctx_dim = target_features.size(-1)
-    block_ids_batch = torch.full((bsz, BLOCK_SIZE), MASK_TOKEN_ID,
+    num_blocks = sum(len(ap) for _, _, ap in seqs)
+    max_ctx = target_features.size(1)  # == padded max_len
+    block_ids_batch = torch.full((num_blocks, BLOCK_SIZE), MASK_TOKEN_ID,
                                   dtype=torch.long, device=device)
-    labels_batch = torch.zeros(bsz, BLOCK_SIZE - 1, dtype=torch.long, device=device)
-    ctx_batch = torch.empty(bsz, BLOCK_SIZE, ctx_dim,
+    labels_batch = torch.zeros(num_blocks, BLOCK_SIZE - 1, dtype=torch.long, device=device)
+    ctx_batch = torch.empty(num_blocks, max_ctx, ctx_dim,
                              dtype=target_features.dtype, device=device)
-    pos_batch = torch.empty(bsz, 2 * BLOCK_SIZE, dtype=torch.long, device=device)
+    pos_batch = torch.empty(num_blocks, max_ctx + BLOCK_SIZE, dtype=torch.long, device=device)
+    # SDPA expects -inf for blocked positions. Shape (num_blocks, 1, q_len, k_len)
+    # so it broadcasts over heads. k_len = max_ctx + BLOCK_SIZE.
+    draft_attn_mask = torch.zeros(
+        num_blocks, 1, BLOCK_SIZE, max_ctx + BLOCK_SIZE,
+        dtype=amp_dtype, device=device,
+    )
 
-    for i, (iids, plen, anchor_pos) in enumerate(seqs):
-        abs_anchor = plen + anchor_pos
+    b = 0
+    for i, (iids, plen, anchor_positions) in enumerate(seqs):
         iids_dev = iids.to(device)
-        block_ids_batch[i, 0] = iids_dev[abs_anchor]
-        labels_batch[i] = iids_dev[abs_anchor + 1 : abs_anchor + BLOCK_SIZE]
-        ctx_batch[i] = target_features[i, abs_anchor - BLOCK_SIZE : abs_anchor, :]
-        pos_batch[i, :BLOCK_SIZE] = torch.arange(
-            abs_anchor - BLOCK_SIZE, abs_anchor, device=device,
-        )
-        pos_batch[i, BLOCK_SIZE:] = torch.arange(
-            abs_anchor, abs_anchor + BLOCK_SIZE, device=device,
-        )
+        for anchor_pos in anchor_positions:
+            abs_anchor = plen + anchor_pos
+            block_ids_batch[b, 0] = iids_dev[abs_anchor]
+            labels_batch[b] = iids_dev[abs_anchor + 1 : abs_anchor + BLOCK_SIZE]
+            ctx_batch[b] = target_features[i]  # full ctx — mask will drop padding
+            pos_batch[b, :max_ctx] = torch.arange(0, max_ctx, device=device)
+            pos_batch[b, max_ctx:] = torch.arange(
+                abs_anchor, abs_anchor + BLOCK_SIZE, device=device,
+            )
+            # Block all ctx K positions >= abs_anchor (those are either the
+            # anchor's own future inside the sequence or PAD beyond the seq end).
+            draft_attn_mask[b, :, :, abs_anchor:max_ctx] = float("-inf")
+            b += 1
 
     # --- One batched draft forward + loss ---
     with torch.no_grad():
@@ -258,6 +277,7 @@ for step in range(NUM_STEPS):
             noise_embedding=noise_emb,
             target_hidden=ctx_batch,
             position_ids=pos_batch,
+            attention_mask=draft_attn_mask,
         )
         logits = lm_head(draft_hidden[:, 1:, :])  # (bsz, B-1, vocab)
 
@@ -266,13 +286,13 @@ for step in range(NUM_STEPS):
             labels_batch.reshape(-1),
             reduction="none",
             label_smoothing=LABEL_SMOOTHING,
-        ).view(bsz, BLOCK_SIZE - 1)
+        ).view(num_blocks, BLOCK_SIZE - 1)
 
         weights = position_weights  # (B-1,)
         per_sample_loss = (loss_per_pos * weights).sum(dim=1) / weights.sum()
-        # Divide by nominal BATCH_SIZE (not bsz) so steps where some samples
-        # were dropped scale the gradient the same way the old loop did.
-        batch_loss = per_sample_loss.sum() / BATCH_SIZE
+        # Normalize by the nominal total block count so gradient scale doesn't
+        # change with blocks dropped for being too short.
+        batch_loss = per_sample_loss.sum() / (BATCH_SIZE * BLOCKS_PER_SEQ)
 
     # --- Backward + optimize ---
     optimizer.zero_grad(set_to_none=True)
@@ -324,6 +344,7 @@ torch.save({
     "model_state": save_model.state_dict(),
     "config": draft_config,
     "loss": smooth_loss,
+    "mask_token_id": MASK_TOKEN_ID,
 }, CACHE_DIR / "draft_checkpoint_final.pt")
 
 # ---------------------------------------------------------------------------
@@ -331,7 +352,7 @@ torch.save({
 # ---------------------------------------------------------------------------
 
 peak_vram = torch.cuda.max_memory_allocated() / 2**30 if device.type == "cuda" else 0
-training_tokens = (step + 1) * BATCH_SIZE * BLOCK_SIZE
+training_tokens = (step + 1) * BATCH_SIZE * BLOCKS_PER_SEQ * BLOCK_SIZE
 
 print()
 print("=" * 60)

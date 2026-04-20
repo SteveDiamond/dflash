@@ -180,8 +180,15 @@ def prepare_eval_prompts(tokenizer):
     print("Preparing evaluation prompts...")
     all_input_ids = []
 
+    # Format with enable_thinking=False — Qwen3-4B defaults to thinking mode
+    # (emits <think> as the first response token). The released DFlash draft
+    # was trained on non-thinking responses, and the seed trains on dataset
+    # responses that have no <think>, so the eval distribution needs to match.
     for prompt_text in EVAL_PROMPTS:
-        formatted = f"<|im_start|>user\n{prompt_text}<|im_end|>\n<|im_start|>assistant\n"
+        formatted = tokenizer.apply_chat_template(
+            [{"role": "user", "content": prompt_text}],
+            tokenize=False, add_generation_prompt=True, enable_thinking=False,
+        )
         tokens = tokenizer(formatted, return_tensors="pt")
         all_input_ids.append(tokens["input_ids"].squeeze(0))
 

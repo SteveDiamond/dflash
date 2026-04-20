@@ -71,14 +71,11 @@ def tier1_eval(
                                   dtype=torch.long, device=device)
         block_tokens[:, 0] = greedy_first.squeeze()
 
-        ctx = target_features[:, -block_size:, :] if target_features.shape[1] >= block_size \
-            else F.pad(target_features, (0, 0, block_size - target_features.shape[1], 0))
-
-        ctx_positions = torch.arange(
-            max(0, seq_len - block_size), seq_len, device=device,
-        )
-        if len(ctx_positions) < block_size:
-            ctx_positions = F.pad(ctx_positions, (block_size - len(ctx_positions), 0))
+        # Use the full prefill as ctx — the released DFlash draft was trained
+        # with variable-length ctx (entire prompt history), not a fixed
+        # block_size slice. Truncating ctx destroys pos-0..k accuracy.
+        ctx = target_features
+        ctx_positions = torch.arange(0, seq_len, device=device)
         draft_positions = torch.arange(seq_len, seq_len + block_size, device=device)
         position_ids = torch.cat([ctx_positions, draft_positions]).unsqueeze(0)
 
@@ -87,7 +84,7 @@ def tier1_eval(
         with torch.amp.autocast(device_type="cuda", dtype=dtype, enabled=device.type == "cuda"):
             draft_hidden = draft_model(
                 noise_embedding=noise_emb,
-                target_hidden=ctx[:, :block_size, :],
+                target_hidden=ctx,
                 position_ids=position_ids,
             )
             draft_logits = lm_head(draft_hidden[:, 1:, :])
@@ -175,7 +172,12 @@ def main():
     eval_prompts = eval_data_raw["input_ids"][:args.max_prompts]
     print(f"Evaluating on {len(eval_prompts)} prompts")
 
-    mask_token_id = 0
+    # Mask token used during training is a per-checkpoint property. The seed
+    # trains with MASK_TOKEN_ID = 0; the released oracle was trained with
+    # 151669. Checkpoints may stash it next to the config.
+    ckpt = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
+    mask_token_id = ckpt.get("mask_token_id", 0)
+    print(f"mask_token_id: {mask_token_id}")
 
     print(f"\nRunning Tier {args.tier} evaluation...")
     t0 = time.time()

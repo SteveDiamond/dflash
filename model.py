@@ -468,11 +468,12 @@ def speculative_decode(
 
         if actual_bs > 1:
             noise_emb = embed_fn(block_tokens)
-            ctx_features = target_features[:, start:end, :]
+            # Full-history ctx: all target_features up to position `start`.
+            ctx_features = target_features[:, :start, :]
+            ctx_len = ctx_features.shape[1]
 
-            pos_ids = torch.arange(start, start + 2 * actual_bs, device=device).unsqueeze(0)
-            ctx_pos = torch.arange(start, end, device=device)
-            draft_pos = torch.arange(start, end, device=device)
+            ctx_pos = torch.arange(0, ctx_len, device=device)
+            draft_pos = torch.arange(start, start + actual_bs, device=device)
             pos_ids = torch.cat([ctx_pos, draft_pos]).unsqueeze(0)
 
             draft_hidden = draft_model(
@@ -481,37 +482,27 @@ def speculative_decode(
                 position_ids=pos_ids,
             )
             draft_logits = lm_head(draft_hidden[:, 1:, :])
-            block_tokens[:, 1:actual_bs] = _sample(draft_logits[:, :actual_bs-1, :], temperature)
+            block_tokens[:, 1:actual_bs] = _sample(
+                draft_logits[:, :actual_bs - 1, :], temperature,
+            )
 
         target_out = target_model(
-            block_tokens, output_hidden_states=True, use_cache=False,
+            output_ids[:, :start + actual_bs],
+            output_hidden_states=True, use_cache=False,
         )
-        posterior = _sample(target_out.logits, temperature)
+        posterior = _sample(target_out.logits[:, start - 1:start + actual_bs - 1, :], temperature)
 
-        accepted = (block_tokens[:, 1:] == posterior[:, :-1]).cumprod(dim=1).sum(dim=1)[0].item()
+        accepted = (block_tokens[:, 1:] == posterior[:, 1:]).cumprod(dim=1).sum(dim=1)[0].item()
         output_ids[:, start:start + accepted + 1] = block_tokens[:, :accepted + 1]
-        output_ids[:, start + accepted + 1] = posterior[:, accepted]
+        if start + accepted + 1 < max_length:
+            output_ids[:, start + accepted + 1] = posterior[0, accepted]
         start += accepted + 1
         acceptance_lengths.append(accepted + 1)
 
-        if actual_bs > 1:
-            target_features = extract_context_features(
-                target_out.hidden_states, layer_ids,
-            )[:, :accepted + 1, :]
-            new_features = torch.full(
-                (1, max_length + block_size - target_features.shape[1],
-                 target_features.shape[2]),
-                0, dtype=target_features.dtype, device=device,
-            )
-            target_features = torch.cat([
-                extract_context_features(
-                    target_model(
-                        output_ids[:, :start],
-                        output_hidden_states=True, use_cache=False,
-                    ).hidden_states,
-                    layer_ids,
-                ),
-            ], dim=1)
+        # Refresh target features over the accepted output so ctx stays aligned.
+        target_features = extract_context_features(
+            target_out.hidden_states, layer_ids,
+        )
 
     output_ids = output_ids[:, :min(start + 1, max_length)]
     return output_ids, acceptance_lengths
@@ -555,14 +546,25 @@ def evaluate_acceptance_length(
     lm_head = target_model.lm_head
     layer_ids = draft_model.target_layer_ids
 
+    target_device = next(target_model.parameters()).device
+    target_dtype = next(target_model.parameters()).dtype
+
+    def amp():
+        return torch.amp.autocast(
+            device_type="cuda", dtype=target_dtype,
+            enabled=target_device.type == "cuda",
+        )
+
     for prompt_ids in prompts:
         if prompt_ids.dim() == 1:
             prompt_ids = prompt_ids.unsqueeze(0)
+        prompt_ids = prompt_ids.to(target_device)
         device = prompt_ids.device
 
-        target_out = target_model(
-            prompt_ids, output_hidden_states=True, use_cache=False,
-        )
+        with amp():
+            target_out = target_model(
+                prompt_ids, output_hidden_states=True, use_cache=False,
+            )
         greedy_first = torch.argmax(target_out.logits[:, -1:, :], dim=-1)
         target_features = extract_context_features(
             target_out.hidden_states, layer_ids,
@@ -577,35 +579,34 @@ def evaluate_acceptance_length(
                                       dtype=torch.long, device=device)
             block_tokens[:, 0] = generated[:, -1]
 
-            full_out = target_model(generated, output_hidden_states=True, use_cache=False)
+            with amp():
+                full_out = target_model(generated, output_hidden_states=True, use_cache=False)
             target_features = extract_context_features(full_out.hidden_states, layer_ids)
 
             noise_emb = embed_fn(block_tokens)
-            ctx = target_features[:, -block_size:, :] if target_features.shape[1] >= block_size \
-                else F.pad(target_features, (0, 0, block_size - target_features.shape[1], 0))
+            # Full-history ctx matches how the released draft was trained.
+            ctx = target_features
+            ctx_len = ctx.shape[1]
 
-            ctx_positions = torch.arange(
-                max(0, pos - block_size), pos, device=device,
-            )
-            if len(ctx_positions) < block_size:
-                ctx_positions = F.pad(ctx_positions, (block_size - len(ctx_positions), 0))
+            ctx_positions = torch.arange(0, ctx_len, device=device)
             draft_positions = torch.arange(pos - 1, pos - 1 + block_size, device=device)
             position_ids = torch.cat([ctx_positions, draft_positions]).unsqueeze(0)
 
-            draft_hidden = draft_model(
-                noise_embedding=noise_emb,
-                target_hidden=ctx[:, :block_size, :],
-                position_ids=position_ids,
-            )
-            draft_logits = lm_head(draft_hidden[:, 1:, :])
+            with amp():
+                draft_hidden = draft_model(
+                    noise_embedding=noise_emb,
+                    target_hidden=ctx,
+                    position_ids=position_ids,
+                )
+                draft_logits = lm_head(draft_hidden[:, 1:, :])
             draft_tokens = _sample(draft_logits, temperature)
             block_tokens[:, 1:] = draft_tokens
 
-            verify_input = block_tokens
-            verify_out = target_model(
-                torch.cat([generated[:, :-1], block_tokens], dim=1),
-                output_hidden_states=True, use_cache=False,
-            )
+            with amp():
+                verify_out = target_model(
+                    torch.cat([generated[:, :-1], block_tokens], dim=1),
+                    output_hidden_states=True, use_cache=False,
+                )
             verify_logits = verify_out.logits[:, -(block_size):, :]
             verify_tokens = torch.argmax(verify_logits, dim=-1)
 

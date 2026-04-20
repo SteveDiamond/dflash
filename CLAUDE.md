@@ -29,6 +29,10 @@ Save the `agent_id` and `agent_name` from the response. You'll need them for all
 
 DFlash is a **block diffusion** speculative decoding framework. Instead of generating draft tokens one at a time (like EAGLE-3), it generates a block of 8-16 tokens in **parallel** via a small draft model conditioned on the target LLM's hidden features. The target model then verifies the draft, accepting matching tokens. DFlash achieves 6x speedup over autoregressive decoding.
 
+### Oracle ceiling
+
+The paper authors released trained weights as `z-lab/Qwen3-4B-DFlash-b16`. Loaded into this harness they score **tier-1 ≈ 5.27** (tier-2 ≈ 4.56) on our 50 eval prompts. That's the realistic ceiling your agent is reverse-engineering toward. Run `python scripts/oracle_score.py` to reproduce.
+
 ### What We Know (from the paper)
 - **Architecture**: 3-8 transformer decoder layers, shared embedding + LM head with frozen target
 - **KV injection**: Hidden features from 5 uniformly-spaced target layers (layer 1 to num_layers-3), concatenated, projected via FC, injected into Key and Value projections of every draft layer
@@ -204,6 +208,7 @@ Post messages when starting, after results, when studying inspiration, when pivo
 | `model.py` | Draft model architecture (fixed) | ❌ NO |
 | `prepare.py` | Data preparation (run once) | ❌ NO |
 | `evaluate.py` | Evaluation harness (fixed) | ❌ NO |
+| `scripts/oracle_score.py` | Download & score the released draft weights | — |
 
 ## Key Architecture Details
 
