@@ -77,6 +77,9 @@ class IterationCreate(BaseModel):
     total_distance: float = 0.0
     notes: str = ""
     route_data: Optional[dict] = None
+    training_metrics: Optional[dict] = None
+    hyperparameters: Optional[dict] = None
+    per_position_accuracy: Optional[list] = None
 
 
 class AdminAuth(BaseModel):

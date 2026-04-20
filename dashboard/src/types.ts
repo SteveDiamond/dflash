@@ -97,6 +97,11 @@ export interface ExperimentPublished {
   strategy_tag?: string | null;
   title?: string | null;
   notes: string;
+  // Compute signals — null for legacy rows and for clients that don't
+  // report training_metrics yet.
+  training_tokens?: number | null;
+  training_seconds?: number | null;
+  flops_estimate?: number | null;
   timestamp: string;
 }
 

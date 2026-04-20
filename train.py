@@ -331,6 +331,7 @@ torch.save({
 # ---------------------------------------------------------------------------
 
 peak_vram = torch.cuda.max_memory_allocated() / 2**30 if device.type == "cuda" else 0
+training_tokens = (step + 1) * BATCH_SIZE * BLOCK_SIZE
 
 print()
 print("=" * 60)
@@ -340,6 +341,7 @@ print(f"training_seconds: {training_seconds:.1f}")
 print(f"final_loss:       {smooth_loss:.6f}")
 print(f"best_loss:        {best_loss:.6f}")
 print(f"total_steps:      {step + 1}")
+print(f"training_tokens:  {training_tokens}")
 print(f"peak_vram_gb:     {peak_vram:.1f}")
 print(f"num_params_M:     {num_params / 1e6:.1f}")
 print(f"draft_layers:     {NUM_DRAFT_LAYERS}")

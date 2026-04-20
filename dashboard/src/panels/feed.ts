@@ -64,21 +64,35 @@ export class FeedPanel implements Panel {
         const globalDelta = msg.delta_vs_best_pct;
         const beatsOwn = msg.beats_own_best === true;
 
+        // Compact compute suffix: "142s · 1.3e13 FLOPs". Omitted entirely if
+        // neither signal is present so legacy rows render clean.
+        const fmtFlops = (f: number): string => {
+          const exp = Math.floor(Math.log10(f));
+          const mant = f / Math.pow(10, exp);
+          return `${mant.toFixed(1)}e${exp}`;
+        };
+        const parts: string[] = [];
+        if (msg.training_seconds != null) parts.push(`${Math.round(msg.training_seconds)}s`);
+        if (msg.flops_estimate != null) parts.push(`${fmtFlops(msg.flops_estimate)} FLOPs`);
+        const computeStr = parts.length
+          ? ` <span style="color:var(--text-dim)">· ${parts.join(" · ")}</span>`
+          : "";
+
         if (msg.is_new_best) {
           // Beat own best AND global best.
           const ownStr = ownDelta != null ? ` (${fmtDelta(ownDelta)} own)` : "";
           const globalStr = globalDelta != null ? ` ${fmtDelta(globalDelta)} vs global` : "";
-          text = `<b>${msg.agent_name}</b> improved &mdash; ${msg.score.toFixed(1)}${ownStr} · NEW GLOBAL BEST${globalStr}`;
+          text = `<b>${msg.agent_name}</b> improved &mdash; ${msg.score.toFixed(1)}${ownStr} · NEW GLOBAL BEST${globalStr}${computeStr}`;
           eventType = "new_global_best";
         } else if (beatsOwn) {
           const ownStr = ownDelta != null ? ` (${fmtDelta(ownDelta)})` : "";
-          text = `<b>${msg.agent_name}</b> improvement &mdash; ${msg.score.toFixed(1)}${ownStr}`;
+          text = `<b>${msg.agent_name}</b> improvement &mdash; ${msg.score.toFixed(1)}${ownStr}${computeStr}`;
           eventType = "experiment_success";
         } else {
           // Show the regression vs own best when available so the magnitude
           // of "no improvement" is visible (e.g. +0.42% = slightly worse).
           const ownStr = ownDelta != null ? ` (${fmtDelta(ownDelta)} vs own)` : "";
-          text = `<b>${msg.agent_name}</b> no improvement &mdash; ${msg.score.toFixed(1)}${ownStr}`;
+          text = `<b>${msg.agent_name}</b> no improvement &mdash; ${msg.score.toFixed(1)}${ownStr}${computeStr}`;
           eventType = "experiment_fail";
         }
         break;

@@ -171,6 +171,9 @@ async function loadInitialState(apiUrl: string) {
         is_new_best: exp.is_new_best === true,
         hypothesis_id: null,
         notes: exp.notes || "",
+        training_tokens: exp.training_tokens ?? null,
+        training_seconds: exp.training_seconds ?? null,
+        flops_estimate: exp.flops_estimate ?? null,
         timestamp: exp.created_at || new Date().toISOString(),
       });
     }

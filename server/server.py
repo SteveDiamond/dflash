@@ -436,6 +436,9 @@ async def get_state(agent_id: str | None = None):
                 "delta_vs_best_pct": e.get("delta_vs_best_pct"),
                 "delta_vs_own_best_pct": e.get("delta_vs_own_best_pct"),
                 "beats_own_best": bool(e.get("beats_own_best")),
+                "training_tokens": e.get("training_tokens"),
+                "training_seconds": e.get("training_seconds"),
+                "flops_estimate": e.get("flops_estimate"),
                 "created_at": e["created_at"],
                 "notes": e["notes"],
             }
@@ -501,18 +504,46 @@ async def create_iteration(req: IterationCreate):
                 ((req.score - prev_agent_best["score"]) / prev_agent_best["score"]) * 100, 6
             )
 
+        # Compute signals. train.py emits these under training_metrics; tolerate
+        # both the current casing (num_params_M) and a lower-case fallback, and
+        # fall back to the benchmark.py top-level training_time when the
+        # per-run training_seconds wasn't captured (e.g., training crashed
+        # before the summary block printed).
+        tm = req.training_metrics or {}
+        def _num(key: str) -> float | None:
+            v = tm.get(key)
+            if v is None:
+                return None
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                return None
+        training_tokens = _num("training_tokens")
+        training_seconds = _num("training_seconds")
+        peak_vram_gb = _num("peak_vram_gb")
+        num_params_m = _num("num_params_M") or _num("num_params_m")
+        flops_estimate: float | None = None
+        if training_tokens and num_params_m:
+            # Chinchilla-style forward+backward FLOPs estimate:
+            # 6 × params × tokens. num_params_m is in millions.
+            flops_estimate = 6.0 * num_params_m * 1e6 * training_tokens
+
         await conn.execute(
             """INSERT INTO experiments
                (id, agent_id, hypothesis_id, algorithm_code, score, feasible,
                 num_vehicles, total_distance, notes, route_data,
                 delta_vs_best_pct, delta_vs_own_best_pct, beats_own_best,
+                training_tokens, training_seconds, peak_vram_gb,
+                num_params_m, flops_estimate,
                 created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (exp_id, req.agent_id, hyp_id, req.algorithm_code, req.score,
              1 if req.feasible else 0, req.num_vehicles, req.total_distance,
              req.notes, route_data_json,
              delta_vs_best_pct, delta_vs_own_best_pct,
              1 if beats_own_best else 0,
+             training_tokens, training_seconds, peak_vram_gb,
+             num_params_m, flops_estimate,
              timestamp),
         )
 
@@ -590,6 +621,9 @@ async def create_iteration(req: IterationCreate):
         "strategy_tag": req.strategy_tag,
         "title": req.title,
         "notes": req.notes,
+        "training_tokens": training_tokens,
+        "training_seconds": training_seconds,
+        "flops_estimate": flops_estimate,
         "timestamp": timestamp,
     })
 

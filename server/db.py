@@ -62,6 +62,11 @@ CREATE TABLE IF NOT EXISTS experiments (
     delta_vs_best_pct REAL,
     delta_vs_own_best_pct REAL,
     beats_own_best INTEGER DEFAULT 0,
+    training_tokens INTEGER,
+    training_seconds REAL,
+    peak_vram_gb REAL,
+    num_params_m REAL,
+    flops_estimate REAL,
     created_at TEXT NOT NULL,
     FOREIGN KEY (agent_id) REFERENCES agents(id)
 );
@@ -131,6 +136,11 @@ async def init_db() -> None:
             "ALTER TABLE experiments ADD COLUMN delta_vs_best_pct REAL",
             "ALTER TABLE experiments ADD COLUMN delta_vs_own_best_pct REAL",
             "ALTER TABLE experiments ADD COLUMN beats_own_best INTEGER DEFAULT 0",
+            "ALTER TABLE experiments ADD COLUMN training_tokens INTEGER",
+            "ALTER TABLE experiments ADD COLUMN training_seconds REAL",
+            "ALTER TABLE experiments ADD COLUMN peak_vram_gb REAL",
+            "ALTER TABLE experiments ADD COLUMN num_params_m REAL",
+            "ALTER TABLE experiments ADD COLUMN flops_estimate REAL",
         ):
             try:
                 await db.execute(stmt)
