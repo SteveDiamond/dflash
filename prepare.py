@@ -1,6 +1,8 @@
 """
 One-time data preparation for DFlash training swarm.
-Downloads target model, training data, and pre-tokenizes sequences.
+Downloads target model and instruction dataset, then tokenizes
+(instruction, dataset response) pairs. Responses come from the dataset
+as-is — the seed does not regenerate them with the target model.
 
 Usage: uv run prepare.py
 
@@ -101,7 +103,9 @@ def download_model():
 
 
 def prepare_training_data(model, tokenizer):
-    """Download instruction data and generate target model responses."""
+    """Download instruction data and tokenize (instruction, dataset response)
+    pairs. Responses are used as-is from the dataset; the target model is
+    not invoked here."""
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
     if TRAIN_DATA_PATH.exists():
@@ -121,7 +125,7 @@ def prepare_training_data(model, tokenizer):
     dataset = dataset.select(range(min(len(dataset), MAX_TRAIN_SAMPLES)))
     print(f"Loaded {len(dataset)} instruction examples")
 
-    print("Generating target model responses...")
+    print("Tokenizing (instruction, dataset response) pairs...")
     device = next(model.parameters()).device
     if device.type == "cpu":
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

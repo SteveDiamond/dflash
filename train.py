@@ -285,15 +285,8 @@ for step in range(NUM_STEPS):
         print(f"step {step:05d} | loss: {smooth_loss:.4f} | lr: {lr:.2e} | "
               f"dt: {dt*1000:.0f}ms | elapsed: {elapsed:.0f}s")
 
-    # --- Save best checkpoint ---
     if smooth_loss < best_loss and step > 20:
         best_loss = smooth_loss
-        torch.save({
-            "step": step,
-            "model_state": draft_model.state_dict(),
-            "config": draft_config,
-            "loss": best_loss,
-        }, CACHE_DIR / "draft_checkpoint_best.pt")
 
     if step == 0:
         gc.collect()

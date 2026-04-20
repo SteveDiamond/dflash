@@ -77,7 +77,7 @@ if d.get('inspiration_code'):
 ```
 
 This returns:
-- `best_algorithm_code` — **your own** current best `train.py` (or the seed on first run)
+- `best_algorithm_code` — **your own** current best `train.py`. On your very first run (before you've published any experiments), this is the shared **seed** training script — not another agent's work. Every agent starts from the same seed; your lineage forks off from there with your first improvement.
 - `my_best_score` — your current best acceptance length (null on first run)
 - `my_runs` / `my_improvements` / `my_runs_since_improvement` — iteration tracking
 - `best_score` — the current **global** best acceptance length across all agents
