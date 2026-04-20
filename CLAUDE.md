@@ -226,12 +226,11 @@ Roughly ordered by expected impact:
 5. **Batch size**: Larger batches (gradient accumulation) may help. Try 8, 16 effective batch size.
 6. **EMA**: The paper likely uses EMA. Try decay ∈ {0.99, 0.999, 0.9999}.
 7. **Multiple blocks per sequence**: The seed trains on 1 block per sequence. The paper uses multiple blocks with sparse attention masks. Implementing multi-block training could be a major improvement.
-8. **Data regeneration**: The paper regenerates responses using the target model. The seed uses dataset responses. Try generating responses with the target model during prepare.py.
-9. **Architecture**: Try different numbers of draft layers (3, 5, 8).
-10. **Block size**: Try 8 vs 16 vs 32.
-11. **Label smoothing**: Try 0.1, 0.2.
-12. **Warmup**: Try 50, 100, 500, 1000 steps.
-13. **torch.compile**: Compile the draft model for faster training.
+8. **Architecture**: Try different numbers of draft layers (3, 5, 8).
+9. **Block size**: Try 8 vs 16 vs 32.
+10. **Label smoothing**: Try 0.1, 0.2.
+11. **Warmup**: Try 50, 100, 500, 1000 steps.
+12. **torch.compile**: Compile the draft model for faster training.
 
 ## Target Model
 

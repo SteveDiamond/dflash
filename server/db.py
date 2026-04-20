@@ -67,6 +67,7 @@ CREATE TABLE IF NOT EXISTS experiments (
     peak_vram_gb REAL,
     num_params_m REAL,
     flops_estimate REAL,
+    per_position_accuracy TEXT,
     created_at TEXT NOT NULL,
     FOREIGN KEY (agent_id) REFERENCES agents(id)
 );
@@ -141,6 +142,7 @@ async def init_db() -> None:
             "ALTER TABLE experiments ADD COLUMN peak_vram_gb REAL",
             "ALTER TABLE experiments ADD COLUMN num_params_m REAL",
             "ALTER TABLE experiments ADD COLUMN flops_estimate REAL",
+            "ALTER TABLE experiments ADD COLUMN per_position_accuracy TEXT",
         ):
             try:
                 await db.execute(stmt)

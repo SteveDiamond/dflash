@@ -111,18 +111,23 @@ def tier1_eval(
 
     per_pos_acc = (per_pos_correct / per_pos_total.clamp(min=1)).tolist()
 
-    accepted_sim = 0
+    # Expected accepted length under per-position independence:
+    #   1 (anchor always accepted) + Σ_k Π_{j<=k} p_j
+    # Continuous and monotone in every p_j, so any real improvement to a
+    # per-position accuracy moves the score. The previous version gated on
+    # `acc > 0.5` with an early break, which produced a plateau at 1.00 for
+    # most iterations — agents couldn't see their changes registering.
+    expected_accepted = 1.0
+    prefix_prob = 1.0
     for acc in per_pos_acc:
-        if acc > 0.5:
-            accepted_sim += acc
-        else:
-            break
+        prefix_prob *= acc
+        expected_accepted += prefix_prob
 
     return {
         "tier": 1,
         "per_position_accuracy": per_pos_acc,
         "mean_position_accuracy": sum(per_pos_acc) / max(len(per_pos_acc), 1),
-        "estimated_acceptance": accepted_sim + 1,
+        "estimated_acceptance": expected_accepted,
         "total_blocks": total_blocks,
     }
 

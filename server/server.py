@@ -321,10 +321,15 @@ async def get_state(agent_id: str | None = None):
             # "recent_hypotheses" = every attempt the agent has made against
             # its current best. No success/fail distinction surfaced to
             # agents: the point is "here's what you've already tried against
-            # this code, so don't repeat it."
+            # this code, so don't repeat it." Joining the matching experiment
+            # lets agents see the score and per-position distribution of each
+            # prior attempt so they can avoid re-running near-equivalents.
             cursor = await conn.execute(
-                f"""SELECT h.id, h.title, h.strategy_tag, h.description
+                f"""SELECT h.id, h.title, h.strategy_tag, h.description,
+                           e.score AS exp_score,
+                           e.per_position_accuracy AS exp_per_pos
                     FROM hypotheses h
+                    LEFT JOIN experiments e ON e.hypothesis_id = h.id
                     WHERE 1=1 {hyp_clause}
                     ORDER BY h.created_at DESC LIMIT 20""",
                 hyp_params,
@@ -371,7 +376,12 @@ async def get_state(agent_id: str | None = None):
                 "recent_hypotheses": [
                     {"id": h["id"], "title": h["title"],
                      "strategy_tag": h["strategy_tag"],
-                     "description": h["description"]}
+                     "description": h["description"],
+                     "score": h.get("exp_score"),
+                     "per_position_accuracy": (
+                         json.loads(h["exp_per_pos"])
+                         if h.get("exp_per_pos") else None
+                     )}
                     for h in recent_hypotheses
                 ],
                 "inspiration_code": inspiration_code,
@@ -528,22 +538,31 @@ async def create_iteration(req: IterationCreate):
             # 6 × params × tokens. num_params_m is in millions.
             flops_estimate = 6.0 * num_params_m * 1e6 * training_tokens
 
+        # Per-position accuracy is a list of floats of length block_size-1.
+        # Stored as JSON text so agents can read back the distribution of
+        # their prior attempts from /api/state without a separate endpoint.
+        per_pos_json = (
+            json.dumps(req.per_position_accuracy)
+            if req.per_position_accuracy is not None
+            else None
+        )
+
         await conn.execute(
             """INSERT INTO experiments
                (id, agent_id, hypothesis_id, algorithm_code, score, feasible,
                 num_vehicles, total_distance, notes, route_data,
                 delta_vs_best_pct, delta_vs_own_best_pct, beats_own_best,
                 training_tokens, training_seconds, peak_vram_gb,
-                num_params_m, flops_estimate,
+                num_params_m, flops_estimate, per_position_accuracy,
                 created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (exp_id, req.agent_id, hyp_id, req.algorithm_code, req.score,
              1 if req.feasible else 0, req.num_vehicles, req.total_distance,
              req.notes, route_data_json,
              delta_vs_best_pct, delta_vs_own_best_pct,
              1 if beats_own_best else 0,
              training_tokens, training_seconds, peak_vram_gb,
-             num_params_m, flops_estimate,
+             num_params_m, flops_estimate, per_pos_json,
              timestamp),
         )
 
