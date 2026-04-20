@@ -216,17 +216,22 @@ for step in range(NUM_STEPS):
         )
 
         abs_anchor = prompt_len + anchor_pos
+        # Match eval/inference: ctx is the BLOCK_SIZE tokens strictly
+        # preceding the anchor, so the draft never sees target features
+        # computed from the tokens it is trying to predict.
+        if abs_anchor < BLOCK_SIZE:
+            continue
         block_ids = block_ids.to(device)
         labels = labels.to(device)
 
         # --- Get embeddings and context ---
         with torch.no_grad():
             noise_emb = embed_fn(block_ids.unsqueeze(0))
-            ctx_features = target_features[:, abs_anchor:abs_anchor + BLOCK_SIZE, :]
+            ctx_features = target_features[:, abs_anchor - BLOCK_SIZE:abs_anchor, :]
 
         # --- Position IDs ---
-        ctx_positions = torch.arange(abs_anchor, abs_anchor + BLOCK_SIZE, device=device)
-        draft_positions = ctx_positions.clone()
+        ctx_positions = torch.arange(abs_anchor - BLOCK_SIZE, abs_anchor, device=device)
+        draft_positions = torch.arange(abs_anchor, abs_anchor + BLOCK_SIZE, device=device)
         position_ids = torch.cat([ctx_positions, draft_positions]).unsqueeze(0)
 
         # --- Forward draft model ---
